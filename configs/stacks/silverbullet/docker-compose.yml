@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  silverbullet:
+    image: zefhemel/silverbullet:latest
+    container_name: silverbullet
+    restart: unless-stopped
+
+    ports:
+      - "4000:3000"
+
+    volumes:
+      - /mnt/tank/apps/silverbullet/notes:/space
+      - /mnt/tank/apps/silverbullet/data:/data
+
+    environment:
+      - SB_HOST=0.0.0.0
+      - SB_PORT=3000

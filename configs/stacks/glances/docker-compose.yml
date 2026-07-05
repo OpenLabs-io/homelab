@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  glances:
+    image: nicolargo/glances:ubuntu-latest-full
+    container_name: glances
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    environment:
+      - GLANCES_OPT=-w
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/os-release:/etc/os-release:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro

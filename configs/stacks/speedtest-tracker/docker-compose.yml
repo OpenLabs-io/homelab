@@ -1,0 +1,24 @@
+version: "3.3"
+services:
+  speedtest-tracker:
+    container_name: speedtest-tracker
+    image: lscr.io/linuxserver/speedtest-tracker:latest
+    dns:
+      - 8.8.8.8
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      - DISPLAY_TIMEZONE=America/New_York
+      - APP_KEY=<REDACTED>
+      - APP_URL=http://<LAN_IP>:4040  # Matches your browser address
+      - DB_CONNECTION=sqlite
+      - SPEEDTEST_SCHEDULE=0 * * * *
+      - APP_DEBUG=true
+    volumes:
+      - /home/<user>/docker/speedtest-tracker-config:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    ports:
+      - 4040:80
+    restart: unless-stopped

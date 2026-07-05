@@ -1,0 +1,26 @@
+version: "2.1"
+
+services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    network_mode: host
+
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      - JELLYFIN_PublishedServerUrl=<LAN_IP>
+      # Removed Nvidia environment variables
+
+    volumes:
+      - /home/ghost/docker/Jellyfin:/config
+      - /vault/Sailing:/data/media
+      - /mnt/landing_zone:/ssd
+
+    # Expose the Intel QuickSync GPU devices directly to the container
+    devices:
+      - /dev/dri:/dev/dri
+
+    restart: unless-stopped
+    # Removed runtime: nvidia

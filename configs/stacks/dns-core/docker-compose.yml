@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  unbound:
+    image: mvance/unbound:latest
+    container_name: unbound
+    network_mode: host
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+    volumes:
+      - /home/<user>/docker/unbound:/opt/unbound/etc/unbound
+    restart: unless-stopped
+
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    network_mode: host
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+    environment:
+      - TZ=America/New_York
+      - FTLCONF_webserver_api_password=<REDACTED>
+      - FTLCONF_dns_upstreams=127.0.0.1#5335
+      - FTLCONF_webserver_port=8090
+      - FTLCONF_webserver_tls_port=0
+    volumes:
+      - /home/<user>/docker/pihole:/etc/pihole
+      - /home/<user>/docker/pihole/dnsmasq.d:/etc/dnsmasq.d
+    depends_on:
+      - unbound
+    restart: unless-stopped

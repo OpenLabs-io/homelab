@@ -1,0 +1,101 @@
+version: "3.8"
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - SERVER_COUNTRIES=Switzerland
+      - VPN_PORT_FORWARDING=on
+      - VPN_PORT_FORWARDING_PROVIDER=protonvpn
+      - DOT=off
+      - VPN_ONDEMAND_DNS=1.1.1.1
+      - HTTP_PROXY=on
+      - HTTP_PROXY_PORT=8888
+      - TZ=America/New_York
+      - FIREWALL_OUTBOUND_SUBNETS=192.168.1.0/24
+      - VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c 'wget -O- --retry-connrefused --post-data="username=<user>&password=<REDACTED>" --save-cookies /tmp/cookie.txt --keep-session-cookies http://localhost:8080/api/v2/auth/login && wget -O- --retry-connrefused --load-cookies /tmp/cookie.txt --post-data="json={\"listen_port\":{{PORT}}}" http://localhost:8080/api/v2/app/setPreferences'
+    volumes:
+      - /home/<user>/docker/gluetun:/gluetun
+    ports:
+      - 8080:8080
+      - 8888:8888/tcp
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "container:gluetun"
+    depends_on:
+      - gluetun
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - WEBUI_PORT=8080
+      - TZ=America/New_York
+      - UMASK_SET=022
+    volumes:
+      - /home/<user>/docker/qbittorrent:/config
+      - /vault/Sailing:/data
+      - /mnt/landing_zone:/ssd
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - /home/<user>/docker/radarr:/config
+      - /vault/Sailing:/data
+      - /mnt/landing_zone:/ssd
+    ports:
+      - 7878:7878
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - /home/<user>/docker/sonarr:/config
+      - /vault/Sailing:/data
+      - /mnt/landing_zone:/ssd
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - /home/<user>/docker/prowlarr:/config
+    ports:
+      - 9696:9696
+    restart: unless-stopped
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=info
+      - TZ=America/New_York
+    ports:
+      - 8191:8191
+    restart: unless-stopped

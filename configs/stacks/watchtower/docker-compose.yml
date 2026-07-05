@@ -1,0 +1,20 @@
+version: "3"
+services:
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - 8089:8080
+    environment:
+      - WATCHTOWER_POLL_INTERVAL=7200
+      - WATCHTOWER_CLEANUP=true
+      - DOCKER_API_VERSION=1.44
+      - WATCHTOWER_HTTP_API_METRICS=true
+      - WATCHTOWER_HTTP_API_TOKEN=<REDACTED>
+      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+      - WATCHTOWER_NOTIFICATION_URL=<REDACTED>@<LAN_IP>:8095/<ntfy-topic>

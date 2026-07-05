@@ -1,0 +1,27 @@
+version: "3.8"
+services:
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      - SERVERURL=<WAN_IP>
+      - SERVERPORT=51820
+      - PEERS=phone
+      - PEERDNS=<LAN_IP>  # Points to your server so your local DNS/Pi-hole still works
+      - ALLOWEDIPS=0.0.0.0/0   # Full tunnel when on, routing everything securely through home
+    volumes:
+      - /opt/wireguard-config:/config
+      - /lib/modules:/lib/modules
+    ports:
+      - 51820:51820/udp
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    restart: unless-stopped

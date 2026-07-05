@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    ports:
+      - 3000:3000
+    user: 1000:1000
+    group_add:
+      - 984
+    volumes:
+      - /home/<user>/docker/homepage-config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys:/sys:ro
+      - /vault:/vault:ro
+    restart: unless-stopped
+    environment:
+      TZ: America/New_York
+      HOMEPAGE_ALLOWED_HOSTS: '*'

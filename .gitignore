@@ -1,0 +1,5 @@
+# Raw config backups contain secrets (passwords, API keys, tokens).
+# Local backup only — never commit, never publish.
+local/
+*.bak
+*.bak-*

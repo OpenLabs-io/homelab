@@ -1,0 +1,13 @@
+version: "2.1"
+services:
+  duckdns:
+    image: lscr.io/linuxserver/duckdns:latest
+    container_name: duckdns
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      - SUBDOMAINS=<subdomain> # e.g., <subdomain>
+      - TOKEN=<REDACTED>         # Your fresh token
+      - LOG_FILE=false
+    restart: always
