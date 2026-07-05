@@ -1,53 +1,61 @@
-# <ntfy-topic> homelab
+# Homelab — Self-Hosted Infrastructure
 
-Documentation and runbooks for my self-hosted homelab. Every runbook in
-`docs/runbooks/` is a real problem I hit and fixed: symptom, root cause,
-exact commands.
+A production-style home server environment I designed, built, and maintain. It runs 24/7 and serves real users (my household), so I treat it like production: uptime matters, changes are versioned, and failures get root-caused.
 
-## Hardware / OS
+**Hardware:** Dell Precision tower workstation · Ubuntu Server (headless) · ZFS storage pool
+**Orchestration:** Docker + Docker Compose, managed via Portainer
 
-- Ubuntu Server, 31 GB RAM, server IP `<LAN_IP>`
-- WD NVMe 931 GB — OS/root (`/dev/nvme0`)
-- Patriot P220 238 GB SSD — download landing zone at `/mnt/landing_zone` (`/dev/sda`)
-- 2× Seagate Exos 16 TB — ZFS mirror pool `vault` at `/vault` (`/dev/sdb` + `/dev/sdc`)
+---
 
-## Stack
+## Services
 
-~24 containers managed as Portainer CE stacks: Jellyfin, Immich, the *arr
-media stack behind gluetun (ProtonVPN/WireGuard), Pi-hole + Unbound
-(recursive DNS), WireGuard (remote access), Uptime Kuma, Scrutiny, ntfy,
-Grafana + Prometheus + cAdvisor, Watchtower, Autoheal, Homepage,
-SilverBullet, Home Assistant.
+| Service | Role |
+|---|---|
+| Jellyfin | Media server (streaming to household devices) |
+| Immich | Self-hosted photo backup & management |
+| Pi-hole v6 | Network-wide DNS filtering / ad & telemetry blocking |
+| Unbound | Recursive DNS resolver (upstream for Pi-hole — no third-party DNS) |
+| WireGuard | VPN for secure remote access |
+| Uptime Kuma | Service uptime monitoring & alerting |
+| Scrutiny | SMART disk health monitoring |
+| Home Assistant | Local-first home automation |
+
+## Network design
+
+- Static LAN IP for the server via NetworkManager, with a matching DHCP reservation at the router
+- All client DNS routed through Pi-hole → Unbound (full recursive resolution — queries never touch Google/Cloudflare)
+- DNS pushed to LAN clients via DHCP option 6 in dnsmasq
+- Containers on isolated Docker bridge networks with fixed addressing for critical services
+- Remote access via WireGuard only — nothing exposed to the WAN
+
+## Reliability & automation
+
+- **Versioned config backups:** all Portainer stack configs are backed up, sanitized, and versioned in Git (see [`scripts/`](scripts/) and [`docs/maintenance.md`](docs/maintenance.md))
+- **Safe shutdown ordering:** docker.service drop-in with hard dependencies on ZFS mount units and an extended stop timeout, so containers always stop before the pool unmounts
+- **Database safety:** extended `stop_grace_period` on Postgres (Immich) to guarantee clean flushes on shutdown
+- **Self-healing:** `restart: unless-stopped` across all stacks — full recovery from power loss with zero manual intervention
+
+## Problems I've diagnosed and fixed
+
+- **Silent DNS fallback:** Pi-hole queries were being answered by 8.8.8.8 instead of Unbound. Traced via query logs + `dig` timeouts to the Unbound container being unreachable after an IP drift on its bridge network. Fixed with static container addressing and a restart policy to prevent silent recurrence.
+- **VPN clobbering local DNS:** while trialing Tailscale, it overwrote `/etc/resolv.conf` and bypassed Pi-hole. Resolved with `--accept-dns=false`; I've since consolidated remote access on WireGuard alone.
+- **False disk-failure alerts:** Scrutiny flagged a drive as failed on UDMA CRC errors (attribute 199). Root cause was a faulty SATA cable; after replacing it, the raw counter stays fixed at its historical value, so I retuned Scrutiny's evaluation method to stop alerting on the stale count while still catching new errors.
+- **Supply-chain triage:** audited my installed AUR packages against published indicators of compromise during the June 2026 AUR supply-chain attack — reviewing PKGBUILD diffs is now standard practice before any install.
+
+Full write-ups — symptom, root cause, exact commands, and the lesson — live in [`docs/runbooks/`](docs/runbooks/).
+
+## Windows / Active Directory lab
+
+*(In progress)* — Windows Server evaluation VM with a small AD domain: users, security groups, and Group Policy (password policy, mapped drives, desktop restrictions), plus a domain-joined client VM.
+
+---
 
 ## Repo layout
 
-| Path | What |
-|------|------|
-| `docs/runbooks/` | One markdown file per solved problem |
-| `docs/decisions.md` | Deliberate security/config decisions and why |
-| `configs/` | **Sanitized** compose files / configs — secrets replaced with `<REDACTED>` |
-| `scripts/backup-configs.sh` | Copies live (unsanitized) configs into `local/` |
-| `local/` | **Gitignored** — raw backups with real secrets, never committed |
-
-## Key paths on the server
-
-- Portainer compose files: `/var/lib/docker/volumes/portainer_data/_data/compose/<stack_id>/docker-compose.yml` (root-owned)
-- Per-service configs: `/home/<user>/docker/<service>/`
-- Unbound config: `/home/<user>/docker/unbound/unbound.conf`
-- Monitoring configs: `/mnt/tank/apps/monitoring/` (Prometheus + Grafana provisioning)
-- ZFS snapshots (Sanoid, every 15 min): browse at `/vault/.zfs/snapshot/<name>/`
-- Host alert scripts: `/home/<user>/scripts/`
-
-## ⚠️ Sanitization policy
-
-Everything committed here must be safe to publish: passwords, API
-keys, tokens, and private keys are replaced with `<REDACTED>` or env
-placeholders. Raw configs live only in the gitignored `local/` dir.
-Before any push, run a secret sweep over tracked files:
-
-```bash
-git grep -inE 'password|passwd|secret|token|api.?key|private.?key' | grep -vi 'REDACTED\|example\|placeholder'
+```
+configs/     Sanitized Docker Compose files for each stack + Unbound config
+docs/        Runbooks (root-caused fixes), architecture decisions, maintenance notes
+scripts/     Config backup + sanitization tooling
 ```
 
-Remember: git history keeps anything ever committed — if a secret
-slips in, rewrite history before pushing, don't just delete the line.
+> All IPs, hostnames, keys, and secrets in this repo are sanitized placeholders.
