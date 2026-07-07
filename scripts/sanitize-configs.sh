@@ -8,6 +8,11 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$REPO/local/portainer-compose"
 DST="$REPO/configs/stacks"
 
+[ -f "$REPO/local/identity.map" ] || {
+  echo "ERROR: local/identity.map missing — refusing to sanitize without the identity list." >&2
+  exit 1
+}
+
 declare -A NAMES=(
   [35]=watchtower [37]=uptime-kuma [38]=homepage [44]=speedtest-tracker
   [45]=glances [50]=jellyfin [51]=media-management [56]=duckdns
@@ -16,6 +21,21 @@ declare -A NAMES=(
 )
 
 rm -rf "$DST"; mkdir -p "$DST"
+
+# Identity strings (username, home paths, WAN/LAN IPs, ntfy topic, DDNS
+# subdomain, personal emails) live in local/identity.map — gitignored, one
+# "literal==>placeholder" per line, longest-match first — so this public
+# script never contains the values it scrubs.
+IDMAP="$REPO/local/identity.map"
+
+scrub_identity() {
+  local args=()
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    args+=(-e "s|${line%%==>*}|${line#*==>}|Ig")
+  done < "$IDMAP"
+  sed "${args[@]}"
+}
 
 sanitize() {
   # Redact values of secret-bearing keys, but keep ${VAR} placeholders —
@@ -26,7 +46,7 @@ sanitize() {
     -e 's/(password=)[^&"]+/\1<REDACTED>/Ig' \
     -e 's/([A-Za-z0-9_]+:[^@ ]+@)/<REDACTED>@/g' \
     -e 's/(-u +[A-Za-z0-9_]+:)[^ "]+/\1<REDACTED>/g' \
-    "$1"
+    "$1" | scrub_identity
 }
 
 for id in "${!NAMES[@]}"; do
@@ -34,7 +54,7 @@ for id in "${!NAMES[@]}"; do
   mkdir -p "$DST/${NAMES[$id]}"
   sanitize "$SRC/$id/docker-compose.yml" > "$DST/${NAMES[$id]}/docker-compose.yml"
   if [ -f "$SRC/$id/stack.env" ]; then
-    sed -E 's/^([A-Za-z0-9_]+)=.*/\1=<REDACTED>/' "$SRC/$id/stack.env" > "$DST/${NAMES[$id]}/stack.env"
+    sed -E 's/^([A-Za-z0-9_]+)=.*/\1=<REDACTED>/' "$SRC/$id/stack.env" | scrub_identity > "$DST/${NAMES[$id]}/stack.env"
   fi
 done
 
@@ -42,5 +62,14 @@ done
 mkdir -p "$REPO/configs/unbound"
 sanitize "$REPO/local/unbound/unbound.conf" > "$REPO/configs/unbound/unbound.conf"
 
-echo "Sanitized configs written to configs/. Now AUDIT before committing:"
+# Repo-wide identity sweep — covers hand-written docs/runbooks too, not just
+# generated configs. Fails loudly so a leak can't slip into a commit.
+if hits=$(sed -e '/^#/d' -e '/^$/d' -e 's/==>.*//' "$IDMAP" \
+    | grep -rInFi -f - "$REPO" --exclude-dir=.git --exclude-dir=local); then
+  echo "LEAK: identity strings found in committed paths — fix before committing:" >&2
+  echo "$hits" >&2
+  exit 1
+fi
+
+echo "Sanitized configs written to configs/. Identity sweep clean. Now AUDIT secrets:"
 echo "  grep -rinE 'password|secret|token|key' $REPO/configs | grep -v REDACTED"
