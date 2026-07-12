@@ -1,0 +1,141 @@
+(dns01) {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+		resolvers 1.1.1.1
+	}
+}
+
+# LAN/VPN-only guard. Port 443 is forwarded on the router, so EVERY site
+# except jellyfin MUST import this — non-private source IPs get dropped.
+(internal_only) {
+	@external not remote_ip private_ranges
+	abort @external
+}
+
+# Vaultwarden — LAN/VPN ONLY.
+vault.openlabs-io.com {
+	import dns01
+	import internal_only
+	reverse_proxy vaultwarden:80
+}
+
+# Jellyfin — internet-facing (friend access). Jellyfin is on host network.
+jellyfin.openlabs-io.com {
+	import dns01
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	reverse_proxy <LAN_IP>:8096
+}
+
+# Internal services — one wildcard cert (*.openlabs-io.com) so individual
+# hostnames never appear in Certificate Transparency logs. To add a service:
+# 1) Pi-hole local record → <LAN_IP>  2) @name host matcher + handle here
+*.openlabs-io.com {
+	import dns01
+	import internal_only
+
+	@homepage host homepage.openlabs-io.com
+	handle @homepage {
+		reverse_proxy <LAN_IP>:3000
+	}
+
+	@grafana host grafana.openlabs-io.com
+	handle @grafana {
+		reverse_proxy <LAN_IP>:3030
+	}
+
+	@immich host immich.openlabs-io.com
+	handle @immich {
+		reverse_proxy <LAN_IP>:2283
+	}
+
+	@kuma host kuma.openlabs-io.com
+	handle @kuma {
+		reverse_proxy <LAN_IP>:3001
+	}
+
+	# Portainer serves HTTPS itself with a self-signed cert
+	@portainer host portainer.openlabs-io.com
+	handle @portainer {
+		reverse_proxy https://<LAN_IP>:9443 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
+	}
+
+	@speedtest host speedtest.openlabs-io.com
+	handle @speedtest {
+		reverse_proxy <LAN_IP>:4040
+	}
+
+	@glances host glances.openlabs-io.com
+	handle @glances {
+		reverse_proxy <LAN_IP>:61208
+	}
+
+	@radarr host radarr.openlabs-io.com
+	handle @radarr {
+		reverse_proxy <LAN_IP>:7878
+	}
+
+	@sonarr host sonarr.openlabs-io.com
+	handle @sonarr {
+		reverse_proxy <LAN_IP>:8989
+	}
+
+	@prowlarr host prowlarr.openlabs-io.com
+	handle @prowlarr {
+		reverse_proxy <LAN_IP>:9696
+	}
+
+	# qBittorrent validates the Host header — send the one it expects
+	@qbit host qbit.openlabs-io.com
+	handle @qbit {
+		reverse_proxy <LAN_IP>:8080 {
+			header_up Host <LAN_IP>:8080
+		}
+	}
+
+	@silverbullet host silverbullet.openlabs-io.com
+	handle @silverbullet {
+		reverse_proxy <LAN_IP>:4000
+	}
+
+	@pihole host pihole.openlabs-io.com
+	handle @pihole {
+		redir / /admin/ 302
+		reverse_proxy <LAN_IP>:8090
+	}
+
+	@prometheus host prometheus.openlabs-io.com
+	handle @prometheus {
+		reverse_proxy <LAN_IP>:9091
+	}
+
+	@scrutiny host scrutiny.openlabs-io.com
+	handle @scrutiny {
+		reverse_proxy <LAN_IP>:8085
+	}
+
+	@ntfy host ntfy.openlabs-io.com
+	handle @ntfy {
+		reverse_proxy <LAN_IP>:8095
+	}
+
+	# Home Assistant — needs trusted_proxies in its configuration.yaml (set 2026-07-12)
+	@ha host ha.openlabs-io.com
+	handle @ha {
+		reverse_proxy <LAN_IP>:8123
+	}
+
+	# Unknown subdomains: drop.
+	handle {
+		abort
+	}
+}

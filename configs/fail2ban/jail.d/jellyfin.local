@@ -1,0 +1,12 @@
+[jellyfin]
+enabled = true
+filter = jellyfin
+logpath = /jellyfin-log/log_*.log
+maxretry = 5
+findtime = 10m
+bantime = 24h
+# Caddy is a bridge container publishing :443, so its traffic traverses
+# DOCKER-USER, not INPUT — bans must land there to have any effect.
+chain = DOCKER-USER
+banaction = iptables-allports
+ignoreip = 127.0.0.1/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16

@@ -1,0 +1,47 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      - DOMAIN=https://vault.openlabs-io.com
+      - SIGNUPS_ALLOWED=false
+    volumes:
+      - /home/<user>/docker/vaultwarden/data:/data
+    networks:
+      - vault_net
+
+  caddy:
+    image: ghcr.io/caddybuilds/caddy-cloudflare:latest
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - CF_API_TOKEN=${CF_API_TOKEN}
+    volumes:
+      - /home/<user>/docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /home/<user>/docker/caddy/data:/data
+      - /home/<user>/docker/caddy/config:/config
+    networks:
+      - vault_net
+
+  cloudflare-ddns:
+    image: favonia/cloudflare-ddns:latest
+    container_name: cloudflare-ddns
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CF_API_TOKEN}
+      - DOMAINS=jellyfin.openlabs-io.com
+      - PROXIED=false
+      - IP6_PROVIDER=none
+    networks:
+      - vault_net
+
+networks:
+  vault_net:

@@ -6,10 +6,28 @@ made consciously, with the trade-offs written down so future-me doesn't
 
 ## Security posture (audit 2026-07-04)
 
-- **Only WAN-open port is 51820/udp (WireGuard).** WireGuard doesn't
-  respond to unauthenticated probes, so the server is silent to port
-  scanners. The old 443 forward was removed as unused. Everything else
-  (SSH, RDP, all web UIs) is LAN/VPN only.
+- **WAN-open ports: 51820/udp (WireGuard) and, since 2026-07-12,
+  443/tcp.** WireGuard doesn't respond to unauthenticated probes, so it
+  is silent to scanners. 443 fronts exactly one public service
+  (Jellyfin, for a friend without VPN) through Caddy; every other vhost
+  on the same port aborts non-private source IPs (see the shared-proxy
+  runbook). Everything else (SSH, RDP, all web UIs) is LAN/VPN only,
+  verified from an external vantage point — not just from the LAN.
+- **Hostname secrecy is not a security boundary.** Internal hostnames
+  appear in this repo's Caddyfile; that's deliberate. Access control is
+  the source-IP guard + no public DNS records + a wildcard cert keeping
+  names out of CT logs. Defense that collapses if someone learns a
+  hostname isn't defense.
+- **Geo-blocking for the public service: skipped.** Bots rent US
+  proxies, and with UFW off there's no clean enforcement point.
+  fail2ban (5 fails/10 min → 24 h, in the DOCKER-USER chain) plus
+  per-account lockouts do the actual work. If log noise ever gets bad,
+  the fallback is Cloudflare proxy + country WAF rules — accepting
+  their streaming-throttle caveat.
+- **Jellyfin's admin account keeps unlimited login attempts** while all
+  other accounts lock after 5 failures. Account lockout on the admin
+  hands any attacker a denial-of-service button against the owner;
+  fail2ban already rate-limits by IP.
 - **UFW stays disabled.** With one silent UDP port on WAN and a trusted
   LAN, host firewall adds mystery-breakage risk (Docker publishes ports
   around UFW anyway, which makes the rules misleading). A ready-to-run
@@ -49,9 +67,25 @@ made consciously, with the trade-offs written down so future-me doesn't
   against pool loss. Offsite backup of irreplaceable data (photos) is
   the known gap on the roadmap.
 
+## Vaultwarden & the domain (2026-07-12)
+
+- **Bought a real domain instead of using Cloudflare Tunnel.** DuckDNS
+  couldn't pass any Let's Encrypt challenge, and a tunnel would put the
+  password vault behind third-party infrastructure. A ~$10/yr domain at
+  Cloudflare Registrar enables DNS-01 certs for everything, split-horizon
+  internal HTTPS, and doubles as a future public site.
+- **The vault is reachable only from LAN/WireGuard** — no tunnel, no
+  public DNS record, and the reverse proxy aborts external IPs even
+  though 443 is forwarded. Remote vault access rides the VPN, same as
+  everything else.
+- Vaultwarden signups closed after the one account; admin panel
+  disabled (no ADMIN_TOKEN). Nightly online SQLite backup + restore
+  test verified before trusting it with real passwords.
+
 ## Known accepted debt
 
 - Some service passwords are reused and live in plaintext configs.
-  Acknowledged; secrets cleanup is planned alongside a Vaultwarden
-  deployment (blocked on HTTPS story → Cloudflare Tunnel).
-- Router UPnP setting still needs verifying/disabling.
+  Acknowledged; secrets rotation into Vaultwarden is the next planned
+  pass (the blocker — nowhere trustworthy to put them — is now solved).
+- ~~Router UPnP setting still needs verifying/disabling.~~ Verified
+  disabled 2026-07-12.

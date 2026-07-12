@@ -26,7 +26,7 @@ A production-style home server environment I designed, built, and maintain. It r
 - All client DNS routed through Pi-hole → Unbound (full recursive resolution — queries never touch Google/Cloudflare)
 - DNS pushed to LAN clients via DHCP option 6 in dnsmasq
 - Containers on isolated Docker bridge networks with fixed addressing for critical services
-- Remote access via WireGuard only — nothing exposed to the WAN
+- Remote admin via WireGuard; one deliberately public service (Jellyfin) behind a hardened reverse proxy — TLS, fail2ban, account lockouts, externally verified. Everything else LAN/VPN-only with valid HTTPS via a wildcard cert and split-horizon DNS
 
 ## Reliability & automation
 

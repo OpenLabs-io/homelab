@@ -25,5 +25,14 @@ rsync -a --delete /home/<user>/docker/ntfy-config/      "$OUT/ntfy-config/"
 rsync -a --delete /home/<user>/scripts/                 "$OUT/host-scripts/"
 [ -d /mnt/tank/apps/monitoring ] && rsync -a --delete /mnt/tank/apps/monitoring/ "$OUT/monitoring/"
 
+# Caddy: ONLY the Caddyfile — data/ and config/ hold private keys and certs
+mkdir -p "$OUT/caddy"
+cp /home/<user>/docker/caddy/Caddyfile "$OUT/caddy/Caddyfile"
+
+# fail2ban: jail + filter definitions only (data/ also has its ban DB)
+mkdir -p "$OUT/fail2ban"
+rsync -a --delete /home/<user>/docker/fail2ban/data/jail.d/   "$OUT/fail2ban/jail.d/"
+rsync -a --delete /home/<user>/docker/fail2ban/data/filter.d/ "$OUT/fail2ban/filter.d/"
+
 echo "Backup complete: $OUT ($STAMP)"
 echo "REMINDER: local/ is gitignored on purpose. Never commit it."
