@@ -84,8 +84,12 @@ made consciously, with the trade-offs written down so future-me doesn't
 
 ## Known accepted debt
 
-- Some service passwords are reused and live in plaintext configs.
-  Acknowledged; secrets rotation into Vaultwarden is the next planned
-  pass (the blocker — nowhere trustworthy to put them — is now solved).
+- ~~Some service passwords are reused and live in plaintext configs.~~
+  **Resolved 2026-07-12:** every service got a unique generated
+  password stored in Vaultwarden; compose-embedded secrets moved to
+  Portainer's env store (files reference `${VARS}` only). See the
+  password-rotation runbook. Remaining plaintext is the irreducible
+  minimum: read-only/least-privilege API keys the dashboard needs,
+  accepted under the LAN trust model.
 - ~~Router UPnP setting still needs verifying/disabling.~~ Verified
   disabled 2026-07-12.

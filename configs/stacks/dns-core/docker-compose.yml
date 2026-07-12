@@ -19,7 +19,7 @@ services:
       - com.centurylinklabs.watchtower.enable=false
     environment:
       - TZ=America/New_York
-      - FTLCONF_webserver_api_password=<REDACTED>
+      - FTLCONF_webserver_api_password=${PIHOLE_PASSWORD}
       - FTLCONF_dns_upstreams=127.0.0.1#5335
       - FTLCONF_webserver_port=8090
       - FTLCONF_webserver_tls_port=0
