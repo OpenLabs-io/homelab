@@ -50,7 +50,8 @@ services:
       - grafana_data:/var/lib/grafana
       - /mnt/tank/apps/monitoring/grafana/dashboards:/var/lib/grafana/dashboards
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=<REDACTED>
+      # admin password lives in Grafana's DB (grafana_data volume);
+      # GF_SECURITY_ADMIN_PASSWORD is only read on first-ever init, so it's omitted
       - GF_USERS_ALLOW_SIGN_UP=false
 
 volumes:
