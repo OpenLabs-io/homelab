@@ -46,6 +46,30 @@ made consciously, with the trade-offs written down so future-me doesn't
   of the media share is the convenience/risk trade I accept; guest
   *write* was a bug and is off.
 
+## External perimeter verification (2026-07-19)
+
+- **Black-box external scan done and clean.** Checked from a genuine
+  off-net vantage (phone on cellular, Wi-Fi off) against the WAN IP,
+  because a scan that hairpins back through the router or the local
+  resolver proves nothing. Only two ports answer, both intentional:
+  - **443/tcp** → Jellyfin via Caddy (public, so friends/family can
+    stream without VPN).
+  - **51820/udp** → WireGuard (silent to unauthenticated probes).
+  No stray forwards, no UPnP surprises — the perimeter matches intent
+  exactly.
+- **Jellyfin is intentionally public — hardened in place, not moved
+  behind the VPN.** It's the one service meant to be shared. Quick
+  Connect stays on for TV-app logins. Login brute-force is covered by
+  fail2ban, not Caddy rate-limiting: this Caddy build lacks the
+  rate_limit module, and adding the directive breaks every site.
+- **fail2ban trusts the proxy correctly.** Jellyfin honors Caddy's
+  forwarded-for header, so auth-fail logs record the real client IP —
+  fail2ban bans the attacker, not the reverse proxy.
+- **fail2ban jail-glob staleness fixed durably.** The jail's log-path
+  glob wasn't picking up the daily-rotated Jellyfin log, so the jail
+  went blind for a few days. A small reload script on a 6-hourly cron
+  re-globs it so a fresh day's log is always watched.
+
 ## Update strategy
 
 - **Watchtower auto-updates most containers** (2h poll, ntfy

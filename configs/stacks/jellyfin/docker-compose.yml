@@ -14,7 +14,7 @@ services:
       # Removed Nvidia environment variables
 
     volumes:
-      - /home/ghost/docker/Jellyfin:/config
+      - /home/<user>/docker/Jellyfin:/config
       - /vault/Sailing:/data/media
       - /mnt/landing_zone:/ssd
 

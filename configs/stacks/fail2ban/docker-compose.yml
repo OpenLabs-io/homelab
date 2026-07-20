@@ -12,4 +12,4 @@ services:
       - F2B_DB_PURGE_AGE=7d
     volumes:
       - /home/<user>/docker/fail2ban/data:/data
-      - /home/ghost/docker/Jellyfin/log:/jellyfin-log:ro
+      - /home/<user>/docker/Jellyfin/log:/jellyfin-log:ro
