@@ -29,6 +29,20 @@ rsync -a --delete /home/<user>/scripts/                 "$OUT/host-scripts/"
 mkdir -p "$OUT/caddy"
 cp /home/<user>/docker/caddy/Caddyfile "$OUT/caddy/Caddyfile"
 
+# GPU box power control — the relay half lives here…
+rsync -a --delete /home/<user>/docker/mothership-power/ "$OUT/mothership-power/"
+
+# …and the agent half lives on the GPU box. Pulled over ssh; skipped without
+# a hard failure when that machine is asleep, which is its normal state.
+mkdir -p "$OUT/mothership-agent"
+MS_SSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -i $HOME/.ssh/id_ed25519_mothership <user>@<MOTHERSHIP_IP>"
+if $MS_SSH true 2>/dev/null; then
+  $MS_SSH 'cat /usr/local/bin/mothership-power'        > "$OUT/mothership-agent/mothership-power"
+  $MS_SSH 'systemctl cat mothership-power.service'     > "$OUT/mothership-agent/mothership-power.service"
+else
+  echo "NOTE: GPU box unreachable (probably powered off) — kept last agent copy."
+fi
+
 # fail2ban: jail + filter definitions only (data/ also has its ban DB)
 mkdir -p "$OUT/fail2ban"
 rsync -a --delete /home/<user>/docker/fail2ban/data/jail.d/   "$OUT/fail2ban/jail.d/"

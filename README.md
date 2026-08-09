@@ -19,6 +19,7 @@ A production-style home server environment I designed, built, and maintain. It r
 | Uptime Kuma | Service uptime monitoring & alerting |
 | Scrutiny | SMART disk health monitoring |
 | Home Assistant | Local-first home automation |
+| Open WebUI + Ollama | Local LLM inference — UI on the server, models on a wake-on-demand GPU box |
 
 ## Network design
 
@@ -34,12 +35,14 @@ A production-style home server environment I designed, built, and maintain. It r
 - **Safe shutdown ordering:** docker.service drop-in with hard dependencies on ZFS mount units and an extended stop timeout, so containers always stop before the pool unmounts
 - **Database safety:** extended `stop_grace_period` on Postgres (Immich) to guarantee clean flushes on shutdown
 - **Self-healing:** `restart: unless-stopped` across all stacks — full recovery from power loss with zero manual intervention
+- **On-demand GPU power control:** a second workstation hosts LLM inference and sleeps when idle. Dashboard tiles wake it (Wake-on-LAN magic packet from an always-on relay) and power it off (token-authed shutdown relayed server-side), with live GPU load/watts/temp read from sysfs. See the [runbook](docs/runbooks/wake-on-lan-remote-power-gpu-box.md)
 
 ## Problems I've diagnosed and fixed
 
 - **Silent DNS fallback:** Pi-hole queries were being answered by 8.8.8.8 instead of Unbound. Traced via query logs + `dig` timeouts to the Unbound container being unreachable after an IP drift on its bridge network. Fixed with static container addressing and a restart policy to prevent silent recurrence.
 - **VPN clobbering local DNS:** while trialing Tailscale, it overwrote `/etc/resolv.conf` and bypassed Pi-hole. Resolved with `--accept-dns=false`; I've since consolidated remote access on WireGuard alone.
 - **False disk-failure alerts:** Scrutiny flagged a drive as failed on UDMA CRC errors (attribute 199). Root cause was a faulty SATA cable; after replacing it, the raw counter stays fixed at its historical value, so I retuned Scrutiny's evaluation method to stop alerting on the stale count while still catching new errors.
+- **A status page that lied:** the "waking up…" page reported *"no response after 5 minutes"* for a machine that booted in 30 seconds — every time. The page is served over HTTPS and polled a plain-HTTP endpoint, so the browser blocked it as mixed active content and an empty `catch` swallowed the error. Moved the cross-origin hop server-side and gave the page a same-origin path. [Write-up](docs/runbooks/https-page-polling-http-endpoint-mixed-content.md)
 - **Supply-chain triage:** audited my installed AUR packages against published indicators of compromise during the June 2026 AUR supply-chain attack — reviewing PKGBUILD diffs is now standard practice before any install.
 
 Full write-ups — symptom, root cause, exact commands, and the lesson — live in [`docs/runbooks/`](docs/runbooks/).

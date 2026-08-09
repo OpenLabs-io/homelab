@@ -1,0 +1,29 @@
+# /etc/systemd/system/mothership-power.service
+[Unit]
+Description=Mothership power endpoint (token-authed remote shutdown)
+Documentation=file:/etc/mothership-power.conf
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/mothership-power
+Restart=on-failure
+RestartSec=5
+
+# Runs as root only because it must call `systemctl poweroff`.
+# Everything else is locked down.
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

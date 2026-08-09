@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Token-authed power endpoint for the Mothership. No dependencies beyond python3.
+
+Runs as a root systemd service so it can execute `systemctl poweroff`.
+
+Routes:
+  GET  /health              -> 200 "ok"        (no auth; for Homepage siteMonitor)
+  GET  /status              -> JSON uptime/host (no auth; for Homepage customapi)
+  GET  /shutdown?token=<REDACTED>  -> HTML confirm page with a POST button
+  POST /shutdown            -> token in form body; powers off after a short delay
+
+The GET is deliberately non-destructive: browsers, chat clients and link
+previewers routinely prefetch URLs, and a bare GET that kills the box would
+fire on a hover. Only the POST actually pulls the plug.
+
+Config lives in /etc/mothership-power.conf (KEY=value, root-only readable) so
+the token never sits in this script.
+"""
+import glob
+import hmac
+import html
+import ipaddress
+import json
+import os
+import socket
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+CONF = os.environ.get("MOTHERSHIP_POWER_CONF", "/etc/mothership-power.conf")
+
+
+def load_conf(path):
+    cfg = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                cfg[key.strip()] = val.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        sys.exit(f"missing config: {path}")
+    return cfg
+
+
+CFG = load_conf(CONF)
+TOKEN = CFG.get("SHUTDOWN_TOKEN", "")
+PORT = int(CFG.get("PORT", "9101"))
+BIND = CFG.get("BIND", "0.0.0.0")
+DELAY = int(CFG.get("DELAY_SECS", "3"))
+DRY_RUN = CFG.get("DRY_RUN", "").lower() in ("1", "true", "yes")
+NETS = [
+    ipaddress.ip_network(n.strip())
+    for n in CFG.get("ALLOW_FROM", "192.168.1.0/24").split(",")
+    if n.strip()
+]
+
+if not TOKEN:
+    sys.exit(f"SHUTDOWN_TOKEN not set in {CONF}")
+
+
+def log(msg):
+    print(f"[mothership-power] {msg}", flush=True)
+
+
+def allowed_ip(addr):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in NETS)
+
+
+def good_token(given):
+    return bool(given) and hmac.compare_digest(given, TOKEN)
+
+
+def _read_int(path):
+    try:
+        with open(path) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def gpu_stats():
+    """amdgpu telemetry straight from sysfs. Returns {} if there is no GPU.
+
+    Safe under this unit's hardening: every file here is world-readable (0444),
+    and ProtectKernelTunables makes /sys read-only rather than hiding it, so a
+    read still succeeds. Nothing here needs the root we already have.
+
+    Everything is GLOBBED, never hardcoded. This box enumerates the 9070 XT as
+    card1 (not card0) and its sensors as hwmon2 -- both are kernel enumeration
+    order and can move across a reboot or a kernel update, which would silently
+    break a hardcoded path and report a dead GPU as 0%.
+    """
+    for dev in sorted(glob.glob("/sys/class/drm/card*/device")):
+        busy = _read_int(f"{dev}/gpu_busy_percent")
+        if busy is None:
+            continue  # not an amdgpu render node; keep looking
+        out = {"gpu_busy": busy}
+
+        used = _read_int(f"{dev}/mem_info_vram_used")
+        total = _read_int(f"{dev}/mem_info_vram_total")
+        if used is not None and total:
+            out["vram_used_gb"] = round(used / 1e9, 1)
+            out["vram_total_gb"] = round(total / 1e9, 1)
+            out["vram_pct"] = round(used / total * 100)
+
+        for hw in sorted(glob.glob(f"{dev}/hwmon/hwmon*")):
+            # RDNA4 exposes power1_average; older parts only have power1_input.
+            for name in ("power1_average", "power1_input"):
+                uw = _read_int(f"{hw}/{name}")
+                if uw is not None:
+                    out["watts"] = round(uw / 1e6)
+                    break
+            # temp1=edge, temp2=junction, temp3=mem on this card. Junction is
+            # what actually throttles, so it is worth carrying alongside edge.
+            edge = _read_int(f"{hw}/temp1_input")
+            if edge is not None:
+                out["temp_c"] = round(edge / 1000)
+            junction = _read_int(f"{hw}/temp2_input")
+            if junction is not None:
+                out["temp_junction_c"] = round(junction / 1000)
+            fan = _read_int(f"{hw}/fan1_input")
+            if fan is not None:
+                out["fan_rpm"] = fan
+            clk = _read_int(f"{hw}/freq1_input")
+            if clk is not None:
+                out["sclk_mhz"] = round(clk / 1e6)
+            break
+        return out
+    return {}
+
+
+PAGE = """<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+ :root {{ color-scheme: light dark; }}
+ body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 30rem;
+        margin: 4rem auto; padding: 0 1.25rem; text-align: center; }}
+ h1 {{ font-size: 1.4rem; }}
+ button {{ font: inherit; font-weight: 600; padding: .8rem 2rem; cursor: pointer;
+          border: 0; border-radius: .5rem; background: #b3261e; color: #fff; }}
+ button:hover {{ background: #8f1d17; }}
+ .sub {{ opacity: .7; font-size: .9rem; }}
+</style>
+<h1>{title}</h1>
+<p class=sub>{sub}</p>
+{body}
+"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "mothership-power"
+
+    def log_message(self, fmt, *args):  # route access logs to the journal
+        # Strip query strings: the token rides in one, and the journal is a
+        # far less private place than /etc/mothership-power.conf.
+        line = (fmt % args).replace("?", "\x00").split("\x00")[0]
+        log(f"{self.client_address[0]} {line}")
+
+    def _send(self, code, body, ctype="text/html; charset=utf-8"):
+        raw = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _gate(self):
+        """Returns True if the request may proceed."""
+        if not allowed_ip(self.client_address[0]):
+            log(f"DENY source {self.client_address[0]}")
+            self._send(403, "<h1>403</h1><p>source not allowed</p>")
+            return False
+        return True
+
+    def do_GET(self):
+        url = urlparse(self.path)
+        if url.path == "/health":
+            return self._send(200, "ok", "text/plain; charset=utf-8")
+
+        if url.path == "/status":
+            with open("/proc/uptime") as fh:
+                up = float(fh.read().split()[0])
+            body = {
+                "status": "up",
+                "host": socket.gethostname(),
+                "uptime_seconds": int(up),
+                "uptime": f"{int(up // 3600)}h {int(up % 3600 // 60)}m",
+            }
+            # Merged in, not nested: the wake-responder on the server passes
+            # unknown top-level keys straight through to Homepage, so a flat
+            # shape means new fields need no change on that side.
+            body.update(gpu_stats())
+            return self._send(200, json.dumps(body), "application/json")
+
+        if url.path == "/shutdown":
+            if not self._gate():
+                return
+            token = (parse_qs(url.query).get("token") or [""])[0]
+            if not good_token(token):
+                log("DENY bad token on GET /shutdown")
+                return self._send(403, "<h1>403</h1><p>bad token</p>")
+            form = (
+                '<form method="POST" action="/shutdown">'
+                f'<input type="hidden" name="token" value="{html.escape(token)}">'
+                '<button type="submit">Shut down now</button></form>'
+            )
+            return self._send(
+                200,
+                PAGE.format(
+                    title=f"Shut down {html.escape(socket.gethostname())}?",
+                    sub="This powers the machine off. Wake it again with the "
+                        "Homepage wake button.",
+                    body=form,
+                ),
+            )
+
+        self._send(404, "<h1>404</h1>")
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/shutdown":
+            return self._send(404, "<h1>404</h1>")
+        if not self._gate():
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(min(length, 4096)).decode("utf-8", "replace")
+        token = (parse_qs(body).get("token") or [""])[0]
+        if not good_token(token):
+            log("DENY bad token on POST /shutdown")
+            return self._send(403, "<h1>403</h1><p>bad token</p>")
+
+        log(f"ACCEPT shutdown from {self.client_address[0]} -- powering off in {DELAY}s")
+        self._send(
+            200,
+            PAGE.format(
+                title="Shutting down",
+                sub=f"{html.escape(socket.gethostname())} powers off in {DELAY} seconds.",
+                body="",
+            ),
+        )
+        threading.Thread(target=self._poweroff, daemon=True).start()
+
+    def _poweroff(self):
+        time.sleep(DELAY)
+        if DRY_RUN:
+            log("DRY_RUN set -- would have run `systemctl poweroff`")
+            return
+        subprocess.run(["/usr/bin/systemctl", "poweroff"], check=False)
+
+
+def main():
+    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    log(f"listening on {BIND}:{PORT}; allowing {', '.join(str(n) for n in NETS)}")
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

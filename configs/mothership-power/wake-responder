@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""Token-authed Wake-on-LAN responder. Runs on the ALWAYS-ON server (<LAN_IP>).
+
+Homepage cannot send raw UDP, and the Mothership obviously cannot wake itself,
+so something always-on has to hold the magic-packet trigger. This is it.
+
+Routes:
+  GET  /health            -> 200 "ok"                (no auth)
+  GET  /target-health     -> 200 "up" / 503 "down"   (source-IP allowlist, no token)
+  GET  /wake?token=<REDACTED>    -> broadcasts, returns an HTML page that polls until
+                             the Mothership answers, then offers a WebUI link
+  GET  /shutdown?token=<REDACTED> -> confirm page
+  POST /shutdown          -> relays the poweroff to the Mothership
+
+THREE tokens, deliberately distinct -- do not mix them up:
+  WAKE_TOKEN      gates GET /wake.             Travels in a browser URL.
+  POWEROFF_TOKEN  gates GET+POST /shutdown.    Travels in a browser URL.
+  SHUTDOWN_TOKEN  the MOTHERSHIP's own credential for its :9101 agent. Relayed
+                  server-side only; never leaves this host, never reaches a
+                  browser.
+Wake and poweroff were one shared token until 2026-08-08. They are split now
+because the wake link is the one you bookmark, paste, or leave in history --
+and it was one click away from powering the box off. Everything reachable at
+mothership.openlabs-io.com sits behind exactly one `import internal_only` line
+in the Caddyfile; if that line ever moves during an unrelated edit, the token
+is the only thing left, so the poweroff token should not be the casual one.
+
+Waking is a plain GET with no confirm step: an accidental wake costs a few
+watts, an accidental shutdown costs your session.
+
+Why the boot page polls /target-health here instead of the Mothership's
+:9101/health directly: the page is served over HTTPS through Caddy, and a
+fetch() from an https:// page to an http:// URL is mixed active content, which
+browsers block outright -- `mode:'no-cors'` does not exempt it. The old direct
+fetch therefore ALWAYS failed, got swallowed by the empty catch, and reported
+"No response after 5 minutes" for a box that had booted in 30 seconds. A
+same-origin relative path is the fix; the cross-origin hop happens server-side
+here, where mixed-content rules do not apply.
+
+Why shutdown is proxied through here rather than linked straight at the
+Mothership: a Homepage href is opened by YOUR BROWSER, so the request would
+arrive from a phone or laptop -- possibly on a VPN subnet -- and the
+Mothership's nftables guard only trusts this server. Relaying keeps the
+Mothership reachable from exactly one host, makes the tiles work from any
+client address, and means the Mothership's own token never reaches a browser.
+
+Config: /etc/wake-responder.conf (KEY=value).
+"""
+import datetime
+import hmac
+import html
+import ipaddress
+import json
+import os
+import socket
+import sys
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlencode, urlparse
+
+CONF = os.environ.get("WAKE_RESPONDER_CONF", "/etc/wake-responder.conf")
+
+
+def load_conf(path):
+    cfg = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                cfg[key.strip()] = val.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        sys.exit(f"missing config: {path}")
+    return cfg
+
+
+CFG = load_conf(CONF)
+TOKEN = CFG.get("WAKE_TOKEN", "")
+POWEROFF_TOKEN = CFG.get("POWEROFF_TOKEN", "")
+PORT = int(CFG.get("PORT", "9102"))
+BIND = CFG.get("BIND", "0.0.0.0")
+MAC = CFG.get("MAC", "<MOTHERSHIP_MAC>")
+BCAST = CFG.get("BROADCAST", "192.168.1.255")
+TARGET = CFG.get("TARGET_URL", "http://<MOTHERSHIP_IP>:8080")
+HEALTH = CFG.get("TARGET_HEALTH", "http://<MOTHERSHIP_IP>:9101/health")
+# Telemetry sources for /status. Both are read server-side so Homepage polls one
+# always-reachable endpoint instead of hanging on a powered-off host.
+TARGET_STATUS = CFG.get("TARGET_STATUS", "http://<MOTHERSHIP_IP>:9101/status")
+OLLAMA_PS = CFG.get("OLLAMA_PS", "http://<MOTHERSHIP_IP>:11434/api/ps")
+
+# The Mothership's own poweroff endpoint + its token. These stay server-side.
+POWER_URL = CFG.get("POWER_URL", "http://<MOTHERSHIP_IP>:9101/shutdown")
+SHUTDOWN_TOKEN = CFG.get("SHUTDOWN_TOKEN", "")
+NETS = [
+    ipaddress.ip_network(n.strip())
+    for n in CFG.get("ALLOW_FROM", "192.168.1.0/24").split(",")
+    if n.strip()
+]
+
+
+def log(msg):
+    print(f"[wake-responder] {msg}", flush=True)
+
+
+if not TOKEN:
+    sys.exit(f"WAKE_TOKEN not set in {CONF}")
+
+if not POWEROFF_TOKEN:
+    # Degrade to the old shared-token behaviour rather than refusing to start.
+    # Losing /wake entirely because a conf edit did not land is worse than the
+    # weaker gate, especially with nobody at home to fix it by hand.
+    POWEROFF_TOKEN = TOKEN
+    log(f"WARNING: POWEROFF_TOKEN not set in {CONF} -- /shutdown has fallen "
+        "back to WAKE_TOKEN, so the wake link can also power the box off.")
+
+
+def parse_mac(mac):
+    """Validated at STARTUP, not at first wake.
+
+    A typo here used to surface as an unhandled ValueError in the middle of a
+    request -- traceback in the log, reset connection in the browser -- while
+    the container went on reporting itself healthy indefinitely. Failing at
+    startup instead puts it in a restart loop, which health-notifier sees.
+    """
+    raw = bytes.fromhex(mac.replace(":", "").replace("-", ""))
+    if len(raw) != 6:
+        raise ValueError(f"bad MAC {mac!r}: want 6 bytes, got {len(raw)}")
+    return raw
+
+
+try:
+    MAC_RAW = parse_mac(MAC)
+except ValueError as exc:
+    sys.exit(f"{exc} (in {CONF})")
+
+
+def send_magic(raw, bcast):
+    packet = b"\xff" * 6 + raw * 16
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        for port in (9, 7):
+            s.sendto(packet, (bcast, port))
+    finally:
+        s.close()
+
+
+def fetch_json(url, timeout=3):
+    """Bounded JSON GET. Returns None on any failure, including "box is off"."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return json.load(resp)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def ollama_summary():
+    """What inference is resident on the GPU right now.
+
+    Deliberately reported as OLLAMA load, not GPU load. Ollama only knows about
+    its own models -- when someone is gaming on the box this returns an empty
+    list while the GPU is pinned at 100%. Labelling this "GPU: idle" would be
+    wrong in exactly that case. Real utilisation/watts/temp need amdgpu sysfs,
+    which means code on the Mothership itself.
+    """
+    data = fetch_json(OLLAMA_PS)
+    if data is None:
+        return {"model": "unreachable", "vram_gb": 0}
+    models = data.get("models") or []
+    if not models:
+        return {"model": "idle", "vram_gb": 0}
+    # Ollama can hold more than one resident; report the largest by VRAM.
+    top = max(models, key=lambda m: m.get("size_vram") or 0)
+    name = top.get("name") or "?"
+    in_vram = top.get("size_vram") or 0
+    total = top.get("size") or 0
+    out = {"vram_gb": round(in_vram / 1e9, 1)}
+
+    # size > size_vram means the model did NOT fit on the card and Ollama split
+    # it across CPU and GPU. Inference is then several times slower, and
+    # nothing else on the dashboard would reveal it -- gpu_busy looks healthy
+    # while the CPU half is the actual bottleneck. Surfaced inline on the model
+    # name rather than as its own column, since it is normally a no-op.
+    # The 2% margin absorbs Ollama's own rounding between the two figures.
+    if total and in_vram and total > in_vram * 1.02:
+        out["offload_pct"] = round((total - in_vram) / total * 100)
+        out["model"] = f"{name} ({out['offload_pct']}% CPU)"
+    else:
+        out["offload_pct"] = 0
+        out["model"] = name
+
+    # When Ollama will evict it from VRAM. Useful for judging whether the next
+    # prompt pays the reload cost or lands on a warm model.
+    exp = top.get("expires_at")
+    if exp:
+        try:
+            when = datetime.datetime.fromisoformat(exp)
+            left = (when - datetime.datetime.now(when.tzinfo)).total_seconds()
+            out["unloads_in"] = f"{round(left / 60)}m" if left > 0 else "now"
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+def target_up():
+    """Server-side liveness probe of the Mothership's agent.
+
+    Bounded at 3s: when the box is off this is an ARP failure, not a refusal,
+    so an unbounded connect would hang the polling thread.
+    """
+    try:
+        with urllib.request.urlopen(HEALTH, timeout=3) as resp:
+            return 200 <= resp.status < 400
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+PAGE = """<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Waking Mothership</title>
+<style>
+ :root {{ color-scheme: light dark; }}
+ body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 30rem;
+        margin: 4rem auto; padding: 0 1.25rem; text-align: center; }}
+ h1 {{ font-size: 1.4rem; }}
+ .sub {{ opacity: .7; font-size: .9rem; }}
+ a.go {{ display: none; margin-top: 1.5rem; font-weight: 600;
+        padding: .8rem 2rem; border-radius: .5rem;
+        background: #1f6feb; color: #fff; text-decoration: none; }}
+ .dot {{ display:inline-block; width:.6rem; height:.6rem; border-radius:50%;
+        background:#e3a008; margin-right:.4rem; }}
+ .up .dot {{ background:#2ea043; }}
+ .up a.go {{ display: inline-block; }}
+</style>
+<body>
+<h1>Magic packet sent</h1>
+<p class=sub id=s><span class=dot></span>Waiting for the Mothership to boot…</p>
+<a class=go href="{target}">Open the WebUI</a>
+<script>
+ const started = Date.now();
+ async function poll() {{
+   try {{
+     // Relative path on purpose -- see the module docstring. An absolute
+     // http:// URL here is mixed content and the browser kills it silently.
+     const r = await fetch('/target-health', {{cache:'no-store'}});
+     if (r.ok) {{
+       document.body.classList.add('up');
+       document.getElementById('s').innerHTML =
+         '<span class=dot></span>Up after ' +
+         Math.round((Date.now()-started)/1000) + 's.';
+       return;
+     }}
+   }} catch (e) {{}}
+   if (Date.now() - started < 300000) setTimeout(poll, 3000);
+   else document.getElementById('s').textContent =
+     'No response after 5 minutes — check it manually.';
+ }}
+ setTimeout(poll, 4000);
+</script>
+"""
+
+
+CONFIRM = """<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+ :root {{ color-scheme: light dark; }}
+ body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 30rem;
+        margin: 4rem auto; padding: 0 1.25rem; text-align: center; }}
+ h1 {{ font-size: 1.4rem; }}
+ .sub {{ opacity: .7; font-size: .9rem; }}
+ button {{ font: inherit; font-weight: 600; padding: .8rem 2rem; cursor: pointer;
+          border: 0; border-radius: .5rem; background: #b3261e; color: #fff; }}
+ button:hover {{ background: #8f1d17; }}
+</style>
+<h1>{title}</h1>
+<p class=sub>{sub}</p>
+{body}
+"""
+
+
+# Polled constantly and carrying no information worth an audit line. /status is
+# in here for the same reason the other two are: a Homepage widget on a 15s
+# refresh is 5,760 requests a day, which would undo the whole point.
+QUIET_PATHS = ("/health", "/target-health", "/status")
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "wake-responder"
+
+    def log_message(self, fmt, *args):
+        # Drop the liveness chatter. The 60s container healthcheck plus the boot
+        # page's 3s poll were 250 of the last 262 lines, which buried every real
+        # event -- and these logs are the only record of who woke or powered off
+        # the box, and the only place a DENY shows up.
+        #
+        # Matched on the exact parsed path, NOT a substring: "/health" is not a
+        # substring of "/target-health" (the separator there is "-", not "/"),
+        # so a substring test silently keeps the noisier of the two. self.path
+        # is unset if the request line failed to parse, and those we do want.
+        # DENY lines call log() directly and are unaffected either way.
+        if urlparse(getattr(self, "path", "")).path in QUIET_PATHS:
+            return
+        line = (fmt % args).replace("?", "\x00").split("\x00")[0]
+        log(f"{self.client_address[0]} {line}")
+
+    def _send(self, code, body, ctype="text/html; charset=utf-8"):
+        raw = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _source_ok(self, what):
+        """Source-IP allowlist. Sends the 403 itself.
+
+        Note this is close to a no-op for anything arriving through Caddy, where
+        the source is Caddy's docker bridge address. The token is the real gate;
+        this just keeps public addresses out on the direct :9102 path.
+        """
+        try:
+            ip = ipaddress.ip_address(self.client_address[0])
+        except ValueError:
+            self._send(403, "<h1>403</h1>")
+            return False
+        if not any(ip in n for n in NETS):
+            log(f"DENY source {ip} on {what}")
+            self._send(403, "<h1>403</h1><p>source not allowed</p>")
+            return False
+        return True
+
+    def _authed(self, token, what, expected):
+        """Source-IP allowlist + constant-time token check. Sends the 403 itself."""
+        if not self._source_ok(what):
+            return False
+        if not (token and hmac.compare_digest(token, expected)):
+            log(f"DENY bad token on {what}")
+            self._send(403, "<h1>403</h1><p>bad token</p>")
+            return False
+        return True
+
+    def do_GET(self):
+        url = urlparse(self.path)
+        if url.path == "/health":
+            return self._send(200, "ok", "text/plain; charset=utf-8")
+
+        if url.path == "/target-health":
+            # No token: this leaks one bit -- whether the box is up -- which
+            # Homepage's siteMonitor already exposes on the same dashboard.
+            # Keeping it token-free keeps the token out of the polling JS.
+            if not self._source_ok("/target-health"):
+                return
+            up = target_up()
+            return self._send(200 if up else 503,
+                              "up" if up else "down",
+                              "text/plain; charset=utf-8")
+
+        if url.path == "/status":
+            # Same reasoning as /target-health: source-IP gated, no token. It
+            # exposes uptime and which model is loaded -- nothing that isn't
+            # already on the dashboard -- and keeping it token-free keeps the
+            # token out of Homepage's widget config.
+            if not self._source_ok("/status"):
+                return
+            agent = fetch_json(TARGET_STATUS)
+            if agent is None:
+                # Powered off is the expected case, not an error. Return 200
+                # with a flat shape so the widget renders "off" instead of
+                # showing a Homepage API error.
+                body = {"state": "off", "uptime": "—",
+                        "model": "—", "vram_gb": 0}
+            else:
+                # Pass the agent's own fields through untouched, so any field
+                # added to :9101/status later (gpu_busy, watts, temp) appears
+                # here with no change on this side.
+                body = dict(agent)
+                body["state"] = "on"
+                body.update(ollama_summary())
+            return self._send(200, json.dumps(body), "application/json")
+
+        token = (parse_qs(url.query).get("token") or [""])[0]
+
+        if url.path == "/wake":
+            if not self._authed(token, "/wake", TOKEN):
+                return
+            try:
+                send_magic(MAC_RAW, BCAST)
+            except OSError as exc:
+                log(f"send failed: {exc}")
+                return self._send(500, CONFIRM.format(
+                    title="Could not send the magic packet",
+                    sub=html.escape(str(exc)),
+                    body="",
+                ))
+            log(f"ACCEPT wake from {self.client_address[0]} -- packet to {MAC}")
+            return self._send(200, PAGE.format(target=TARGET))
+
+        if url.path == "/shutdown":
+            if not self._authed(token, "/shutdown", POWEROFF_TOKEN):
+                return
+            form = (
+                '<form method="POST" action="/shutdown">'
+                f'<input type="hidden" name="token" value="{html.escape(token)}">'
+                '<button type="submit">Shut down now</button></form>'
+            )
+            return self._send(200, CONFIRM.format(
+                title="Shut down the Mothership?",
+                sub="Wake it again with the Wake tile.",
+                body=form,
+            ))
+
+        self._send(404, "<h1>404</h1>")
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/shutdown":
+            return self._send(404, "<h1>404</h1>")
+
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(min(length, 4096)).decode("utf-8", "replace")
+        token = (parse_qs(body).get("token") or [""])[0]
+        if not self._authed(token, "/shutdown", POWEROFF_TOKEN):
+            return
+
+        if not SHUTDOWN_TOKEN:
+            return self._send(500, "<h1>500</h1><p>SHUTDOWN_TOKEN not configured</p>")
+
+        # Relay to the Mothership using ITS token, which never leaves this host.
+        try:
+            req = urllib.request.Request(
+                POWER_URL,
+                data=urlencode({"token": SHUTDOWN_TOKEN}).encode(),
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                code = resp.status
+            log(f"ACCEPT shutdown from {self.client_address[0]} -- relayed, got {code}")
+            self._send(200, CONFIRM.format(
+                title="Shutting down",
+                sub="The Mothership is powering off.",
+                body="",
+            ))
+        except (urllib.error.URLError, OSError) as exc:
+            # The common case by far: it was already off.
+            log(f"relay to {POWER_URL} failed: {exc}")
+            self._send(502, CONFIRM.format(
+                title="Could not reach the Mothership",
+                sub=f"{html.escape(str(exc))} -- it may already be off.",
+                body="",
+            ))
+
+
+if __name__ == "__main__":
+    log(f"listening on {BIND}:{PORT}; waking {MAC} via {BCAST}")
+    ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()

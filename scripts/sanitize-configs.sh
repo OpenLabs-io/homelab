@@ -69,6 +69,24 @@ sanitize "$REPO/local/unbound/unbound.conf" > "$REPO/configs/unbound/unbound.con
 mkdir -p "$REPO/configs/caddy"
 sanitize "$REPO/local/caddy/Caddyfile" > "$REPO/configs/caddy/Caddyfile"
 
+# GPU box power control. Two halves on two machines:
+#   mothership-power/ — the relay container on THIS server (compose + script)
+#   mothership-agent/ — the systemd service on the GPU box, pulled over ssh
+# The .conf holds all three tokens, so it ships only as a .example. Note the
+# sanitize() TOKEN rule is what redacts them -- WAKE_TOKEN / POWEROFF_TOKEN /
+# SHUTDOWN_TOKEN all match on the "TOKEN=" suffix.
+mkdir -p "$REPO/configs/mothership-power" "$REPO/configs/mothership-agent"
+sanitize "$REPO/local/mothership-power/docker-compose.yml" \
+  > "$REPO/configs/mothership-power/docker-compose.yml"
+sanitize "$REPO/local/mothership-power/wake-responder" \
+  > "$REPO/configs/mothership-power/wake-responder"
+sanitize "$REPO/local/mothership-power/wake-responder.conf" \
+  > "$REPO/configs/mothership-power/wake-responder.conf.example"
+for f in mothership-power mothership-power.service; do
+  [ -f "$REPO/local/mothership-agent/$f" ] \
+    && sanitize "$REPO/local/mothership-agent/$f" > "$REPO/configs/mothership-agent/$f"
+done
+
 # fail2ban jail + filter definitions
 for sub in jail.d filter.d; do
   mkdir -p "$REPO/configs/fail2ban/$sub"

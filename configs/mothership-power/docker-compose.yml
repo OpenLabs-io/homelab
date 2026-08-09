@@ -1,0 +1,32 @@
+# Portainer stack: "mothership-power"
+# Paste into Portainer -> Stacks -> Add stack -> Web editor.
+#
+# network_mode: host is REQUIRED, not a shortcut -- a Wake-on-LAN magic packet
+# is a UDP broadcast, and a bridged container's broadcast never reaches the
+# wired LAN segment. It also lets the container bind :9102 on the host.
+#
+# No image build: the stock python image runs the bind-mounted script, so
+# there is nothing to rebuild when the script changes -- just restart.
+# Paths are absolute because Portainer resolves relative paths against its own
+# stack directory (/data/compose/<N>), not against /home/<user>/docker.
+
+services:
+  mothership-power:
+    image: python:3.12-alpine
+    container_name: mothership-power
+    restart: unless-stopped
+    network_mode: host
+    command: python3 -u /app/wake-responder
+    volumes:
+      - /home/<user>/docker/mothership-power/wake-responder:/app/wake-responder:ro
+      - /home/<user>/docker/mothership-power/wake-responder.conf:/etc/wake-responder.conf:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9102/health',timeout=3)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      # Matches the existing autoheal pattern on this box.
+      autoheal: "true"

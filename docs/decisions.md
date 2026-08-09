@@ -106,6 +106,36 @@ made consciously, with the trade-offs written down so future-me doesn't
   disabled (no ADMIN_TOKEN). Nightly online SQLite backup + restore
   test verified before trusting it with real passwords.
 
+## GPU box: remote power control & telemetry (2026-08-08)
+
+- **Inference runs on a separate workstation, woken on demand.** The
+  always-on server has no usable GPU. Rather than leave a workstation
+  idling 24/7, it sleeps and is woken by a magic packet from a dashboard
+  tile, then powered off the same way.
+- **The chat UI lives on the SERVER, not the GPU box.** Only model
+  inference is remote. This keeps the web UI and all chat history
+  reachable while the GPU machine is asleep — otherwise the dashboard
+  would lose a service every time the box powered down.
+- **Shutdown is relayed through the server, not linked directly.** A
+  dashboard `href` is opened by the client's browser, so a direct link
+  would arrive from a phone or VPN address. Relaying means the GPU box
+  trusts exactly one host, the tiles work from any client address, and
+  its token never reaches a browser.
+- **Wake and poweroff use different tokens.** Originally one shared
+  token; split because the wake link is the one that ends up bookmarked,
+  pasted and in browser history — and it was one click from killing a
+  running session. Everything behind that name is guarded by a single
+  `import internal_only` line in the reverse proxy, so the token is the
+  last line of defence and the poweroff one should not be the casual one.
+- **GPU telemetry is read from sysfs and passed through untouched.** The
+  relay forwards unknown JSON keys from the agent straight to the
+  dashboard, so new metrics need a change on one machine, not two.
+- **Accepted:** the GPU box now runs sshd with password auth and has no
+  fail2ban. Key-only is the intended end state but was deferred — the
+  only key on it is the server's, `from=`-restricted, so going key-only
+  remotely would have locked out phone access to a machine with no other
+  remote path (no RDP, no Cockpit).
+
 ## Known accepted debt
 
 - ~~Some service passwords are reused and live in plaintext configs.~~

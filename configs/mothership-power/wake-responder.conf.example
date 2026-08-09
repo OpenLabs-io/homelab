@@ -1,0 +1,35 @@
+# /home/<user>/docker/mothership-power/wake-responder.conf
+# Bind-mounted read-only into the container at /etc/wake-responder.conf.
+
+# Gates GET /wake only. This is the casual one -- it lives in a Homepage href,
+# in browser history, and in anything you paste. It cannot power the box off.
+WAKE_TOKEN=<REDACTED>
+
+# Gates GET+POST /shutdown. Split from WAKE_TOKEN on 2026-08-08 so the wake
+# link is not one click from a poweroff. If this key goes missing the script
+# falls back to WAKE_TOKEN and logs a loud warning rather than refusing to
+# start -- check the logs after editing this file.
+POWEROFF_TOKEN=<REDACTED>
+
+# The Mothership's own token, for ITS :9101 agent. Stays on this host -- the
+# browser never sees it, because shutdown is relayed from here rather than
+# linked directly. Not interchangeable with the two above.
+SHUTDOWN_TOKEN=<REDACTED>
+POWER_URL=http://<MOTHERSHIP_IP>:9101/shutdown
+
+PORT=9102
+BIND=0.0.0.0
+
+# Mothership NIC enp42s0
+MAC=<MOTHERSHIP_MAC>
+BROADCAST=192.168.1.255
+
+TARGET_URL=https://ai.openlabs-io.com
+TARGET_HEALTH=http://<MOTHERSHIP_IP>:9101/health
+
+# Reached two ways: through Caddy (source = Caddy's docker bridge IP, 172.x)
+# and directly on the LAN. 100.64.0.0/10 is Tailscale's CGNAT range -- NOT
+# RFC1918, so leaving it out would silently 403 any Tailscale client, the same
+# gap Caddy's own `private_ranges` guard has. WireGuard peers are 10.13.13.x.
+# The token is the real gate; this list just keeps public addresses out.
+ALLOW_FROM=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10,127.0.0.0/8
