@@ -88,3 +88,6 @@ scripts/     Config backup + sanitization tooling
 ```
 
 > All IPs, hostnames, keys, and secrets in this repo are sanitized placeholders.
+
+> This lab is built and documented with heavy AI assistance throughout. The goals,
+> the architecture decisions, the testing, and the running of these machines are mine.
