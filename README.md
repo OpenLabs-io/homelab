@@ -44,8 +44,33 @@ A production-style home server environment I designed, built, and maintain. It r
 - **False disk-failure alerts:** Scrutiny flagged a drive as failed on UDMA CRC errors (attribute 199). Root cause was a faulty SATA cable; after replacing it, the raw counter stays fixed at its historical value, so I retuned Scrutiny's evaluation method to stop alerting on the stale count while still catching new errors.
 - **A status page that lied:** the "waking up…" page reported *"no response after 5 minutes"* for a machine that booted in 30 seconds — every time. The page is served over HTTPS and polled a plain-HTTP endpoint, so the browser blocked it as mixed active content and an empty `catch` swallowed the error. Moved the cross-origin hop server-side and gave the page a same-origin path. [Write-up](docs/runbooks/https-page-polling-http-endpoint-mixed-content.md)
 - **Supply-chain triage:** audited my installed AUR packages against published indicators of compromise during the June 2026 AUR supply-chain attack — reviewing PKGBUILD diffs is now standard practice before any install.
+- **A bypass in my own LLM command gate:** the classifier that lets the local model use `curl` compared whole tokens, but curl accepts short options clustered and with the value attached — so `curl -T file` was refused while `curl -sTfile` uploaded the service's own credentials to an arbitrary host. Caught on an adversarial review pass before it reached the second machine; fixed by expanding option clusters the way curl's own parser does, and covered by a 134-case regression suite. [Write-up](docs/runbooks/llm-command-gate-curl-flag-bypass.md)
 
 Full write-ups — symptom, root cause, exact commands, and the lesson — live in [`docs/runbooks/`](docs/runbooks/).
+
+## Local AI — a private LLM with gated shell access
+
+A local model runs on a wake-on-demand GPU workstation, with the chat front end
+and search backend on the always-on server. No prompt, file, or command in this
+stack reaches a third-party API.
+
+The model can **run commands on both machines**, which is the part that needed
+real design work:
+
+- **One executor service per host, no cross-machine SSH** — the model reaches
+  both machines, but neither machine can reach the other. No new keys, no
+  lateral path if one host is compromised.
+- **Reads run immediately from an allowlist; anything mutating waits for a
+  human** — approvals arrive as a phone push with one-tap Approve/Deny, plus an
+  expiring session-unlock window for hands-on work.
+- **Read commands execute with no shell at all**, so shell injection on that
+  path is structurally impossible rather than filtered.
+- **Control-plane routes are kept out of the OpenAPI schema.** Open WebUI turns
+  every operation in a spec into a model-callable tool — before that was fixed,
+  the model could approve its own proposals and unlock its own session.
+
+Full write-up, including the observability design and the tradeoffs that are
+accepted rather than solved: [`docs/local-ai.md`](docs/local-ai.md).
 
 ## Windows / Active Directory lab
 
@@ -57,7 +82,8 @@ Full write-ups — symptom, root cause, exact commands, and the lesson — live 
 
 ```
 configs/     Sanitized Docker Compose files for each stack + Unbound config
-docs/        Runbooks (root-caused fixes), architecture decisions, maintenance notes
+docs/        Runbooks (root-caused fixes), architecture decisions, maintenance notes,
+             and the local-AI design write-up
 scripts/     Config backup + sanitization tooling
 ```
 

@@ -1,0 +1,13 @@
+# ~/.config/systemd/user/agent-exec.service.d/path.conf
+#
+# Read commands run with shlex.split and NO shell, so binaries are resolved
+# through the service's own PATH -- and a systemd USER unit inherits a minimal
+# one (/usr/local/bin:/usr/bin). A GPU tool living in /opt/rocm/bin was on the
+# read allowlist but could not be found, and the model responded to the
+# resulting error by silently querying the OTHER host and reasoning about
+# hardware that does not exist here.
+#
+# If one binary "isn't working" while the service is healthy, check this first:
+#   run_read: printenv PATH
+[Service]
+Environment="PATH=/opt/rocm/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"

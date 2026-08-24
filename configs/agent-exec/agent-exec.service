@@ -1,0 +1,19 @@
+# ~/.config/systemd/user/agent-exec.service
+#
+# A USER unit, not a system one. It runs as the login user, needs no root, and
+# can therefore be redeployed non-interactively -- which matters here because
+# sudo on these hosts requires a TTY.
+[Unit]
+Description=agent-exec (gated command execution for the local LLM)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agent-exec
+EnvironmentFile=%h/agent-exec/.env
+ExecStart=%h/agent-exec/.venv/bin/uvicorn agent_exec:app --host 0.0.0.0 --port 8893
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
