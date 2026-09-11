@@ -32,8 +32,7 @@ A production-style home server environment I designed, built, and maintain. It r
 ## Reliability & automation
 
 - **Versioned config backups:** all Portainer stack configs are backed up, sanitized, and versioned in Git (see [`scripts/`](scripts/) and [`docs/maintenance.md`](docs/maintenance.md))
-- **Safe shutdown ordering:** docker.service drop-in with hard dependencies on ZFS mount units and an extended stop timeout, so containers always stop before the pool unmounts
-- **Database safety:** extended `stop_grace_period` on Postgres (Immich) to guarantee clean flushes on shutdown
+- **Storage built for drive life:** ZFS mirror with `ashift=12` matched to the drives' 4K physical sectors, `recordsize=1M` for bulk media, and `atime=off` so library scans stop turning reads into writes. Monthly scrubs, sanoid snapshots, and three independent alerting layers (ZED hooks, cron health checks, Scrutiny) reporting to ntfy. Every property, the reasoning behind it, and the gaps still open: [`docs/storage-zfs.md`](docs/storage-zfs.md)
 - **Self-healing:** `restart: unless-stopped` across all stacks — full recovery from power loss with zero manual intervention
 - **On-demand GPU power control:** a second workstation hosts LLM inference and sleeps when idle. Dashboard tiles wake it (Wake-on-LAN magic packet from an always-on relay) and power it off (token-authed shutdown relayed server-side), with live GPU load/watts/temp read from sysfs. See the [runbook](docs/runbooks/wake-on-lan-remote-power-gpu-box.md)
 
@@ -83,7 +82,7 @@ accepted rather than solved: [`docs/local-ai.md`](docs/local-ai.md).
 ```
 configs/     Sanitized Docker Compose files for each stack + Unbound config
 docs/        Runbooks (root-caused fixes), architecture decisions, maintenance notes,
-             and the local-AI design write-up
+             the storage/ZFS reference, and the local-AI design write-up
 scripts/     Config backup + sanitization tooling
 ```
 
