@@ -336,8 +336,10 @@ managed against numbers that can actually be checked.
 
 Implemented 2026-09-11. Before this, nothing ordered Docker's shutdown
 ahead of the pool: `docker.service` had no drop-in, no ZFS unit anywhere
-in its `After=`, and the stock 60-second stop budget covering 41
-containers.
+in its `After=`, and systemd's global default 90-second stop budget
+covering 41 containers. The Docker package's unit sets no
+`TimeoutStopSec` of its own, so the pool of time for every container to
+exit cleanly was whatever `DefaultTimeoutStopUSec` happened to be.
 
 ZFS itself is transactional and survives an abrupt unmount. The risk is
 to *application* state — SQLite databases across the \*arr stack,
