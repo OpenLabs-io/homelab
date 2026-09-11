@@ -378,8 +378,54 @@ generous the systemd budget is. Raised in `/etc/docker/daemon.json`:
 ```
 
 With `live-restore` disabled (the default here) stopping dockerd stops
-the containers, so this is the value that actually governs how much time
-they get. No container overrides the default 10-second grace period.
+the containers, so this is the value that actually governs how much total
+time they get.
+
+### And a third timer, found in the journal
+
+Raising the two above still was not enough. Each container has its *own*
+grace period, set when the container is created and defaulting to 10
+seconds. The previous shutdown showed seven containers exceeding it:
+
+```
+dockerd: Container failed to exit within 10s of signal 15 - using the force
+  telemetry-service   mothership-power   homeassistant
+  open-webui          caddy              health-notifier   (+1 since replaced)
+```
+
+"Using the force" is `SIGKILL`. Two of those keep SQLite databases and
+are the ones worth protecting, so both now set an explicit ceiling:
+
+```yaml
+stop_grace_period: 60s
+```
+
+- `open-webui` — SQLite under `/app/backend/data`
+- `homeassistant` — the recorder database under `/config`
+
+Immich's Postgres is deliberately **not** in that list: it was never
+force-killed, because Postgres exits promptly on `SIGTERM`.
+
+The remaining three were left alone on purpose. A longer grace period
+only helps a process that *would* exit given more time. For a service
+that ignores `SIGTERM` outright, raising the ceiling just makes shutdown
+slower and still ends in a kill — the fix there is signal handling in the
+service, not a bigger number in the compose file.
+
+### Measured shutdown cost
+
+From the 2026-09-11 reboot, before any of these changes:
+
+```
+08:16:18  Stopping docker.service
+08:16:29  Stopped docker.service     <- 11s for all 41 containers
+08:17:50  Unmount All Filesystems    <- ~92s total shutdown
+```
+
+Docker was 11 seconds of a 92-second shutdown; the balance was the
+desktop session. All three timers are **ceilings, not waits** — nothing
+sits on the clock when containers exit cleanly, so normal shutdown time
+is unchanged.
 
 Verify:
 
@@ -395,19 +441,39 @@ systemctl show docker.service -p DropInPaths -p After -p TimeoutStopUSec
 
 ---
 
-## Known gaps
+## SMART self-tests
 
-### No scheduled SMART self-tests
+Implemented 2026-09-11. `smartd` was running with only the stock
+`DEVICESCAN` line and no `-s` schedule, so no periodic tests were
+configured — and neither pool drive had a completed self-test in its log.
 
-`smartd` runs, but with the stock `DEVICESCAN` line and no `-s` schedule,
-so no periodic short or long tests are configured. Neither pool drive has
-a completed self-test in its log.
+```
+DEVICESCAN -d removable -n standby -m root -M exec /usr/share/smartmontools/smartd-runner \
+           -s (S/../.././02|L/../22/./03)
+```
 
-This matters more than usual here: a scrub verifies only *allocated*
-blocks, and the pool is 46% full. Over half of each platter is currently
-never read. A long self-test walks the whole surface and surfaces weak
-sectors while the mirror is still healthy enough to repair them — rather
-than discovering them during a resilver, when redundancy is already gone.
+| | Schedule | Covers |
+|---|---|---|
+| Short | daily, 02:00 | electronics, heads, a sample of the surface (~2 min) |
+| Long | monthly, 22nd, 03:00 | **the entire platter surface** |
+
+The long test is the one that matters here. **A scrub reads only
+*allocated* blocks**, and the pool is 46% full — so more than half of
+each platter is never verified by ZFS at all. A long self-test walks the
+whole surface and surfaces a weak sector while the mirror is still intact
+and able to rewrite it, rather than during a resilver when redundancy is
+already gone.
+
+The 22nd is chosen to stay clear of the second-Sunday scrub (days 8–14),
+so the two heavy full-disk operations never overlap.
+
+`smartd` re-reads this only on restart, so confirm it is actually live
+rather than assuming the file is enough:
+
+```bash
+systemctl restart smartd
+smartctl -l selftest /dev/sdb     # a completed Short offline appears after 02:00
+```
 
 ---
 
