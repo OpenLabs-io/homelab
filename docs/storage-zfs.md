@@ -332,42 +332,70 @@ managed against numbers that can actually be checked.
 
 ---
 
-## Known gaps
+## Shutdown ordering
 
-### 1. Docker has no shutdown ordering against the pool
+Implemented 2026-09-11. Before this, nothing ordered Docker's shutdown
+ahead of the pool: `docker.service` had no drop-in, no ZFS unit anywhere
+in its `After=`, and the stock 60-second stop budget covering 41
+containers.
 
-```
-docker.service  DropInPaths     = (none)
-                After           = (no ZFS unit, no vault.mount)
-                TimeoutStopUSec = 1min   (stock default)
-```
+ZFS itself is transactional and survives an abrupt unmount. The risk is
+to *application* state — SQLite databases across the \*arr stack,
+Postgres for Immich — and to shutdowns that hang waiting on a timeout.
 
-Nothing orders Docker's shutdown ahead of `vault.mount`, and 41
-containers share a 60-second stop budget. On shutdown, containers holding
-files open on `/vault` can be killed mid-write, or the unmount can race
-them.
-
-ZFS itself is transactional and survives this — the risk is to
-*application* state (SQLite databases in the \*arr stack, Postgres for
-Immich), and to shutdowns that hang waiting on a timeout.
-
-Intended fix — a drop-in at `/etc/systemd/system/docker.service.d/zfs-ordering.conf`:
+Drop-in at `/etc/systemd/system/docker.service.d/zfs-ordering.conf`:
 
 ```ini
 [Unit]
-After=vault.mount zfs.target
+After=zfs-mount.service vault.mount zfs.target
 
 [Service]
 TimeoutStopSec=300
 ```
 
-`After=` gives ordering in both directions: systemd stops units in
-reverse start order, so Docker stops before the pool unmounts.
-`Requires=vault.mount` would additionally prevent Docker starting without
-the pool, but it is **not** used here — a pool import failure would then
-also take down Pi-hole and DNS for the whole network.
+`After=` is what does the work. systemd stops units in reverse start
+order, so ordering Docker *after* the pool means it stops *before* the
+pool unmounts.
 
-### 2. No scheduled SMART self-tests
+`Requires=vault.mount` was deliberately **not** used. It would also stop
+Docker starting when the pool is missing — but a failed import would then
+take Pi-hole, and with it LAN DNS, down as well. The ordering is worth
+having; that blast radius is not.
+
+### The half that is easy to miss
+
+`TimeoutStopSec` only bounds how long *systemd* waits for Docker.
+**dockerd has its own `--shutdown-timeout`, and it defaults to 15
+seconds** — after which it SIGKILLs whatever is still running, however
+generous the systemd budget is. Raised in `/etc/docker/daemon.json`:
+
+```json
+{
+    "shutdown-timeout": 120
+}
+```
+
+With `live-restore` disabled (the default here) stopping dockerd stops
+the containers, so this is the value that actually governs how much time
+they get. No container overrides the default 10-second grace period.
+
+Verify:
+
+```bash
+systemctl show docker.service -p DropInPaths -p After -p TimeoutStopUSec
+```
+
+> The systemd drop-in applies after `systemctl daemon-reload` alone —
+> ordering is evaluated when the shutdown transaction is built, so no
+> restart is needed. The `daemon.json` change needs a dockerd restart and
+> is best left to pick up on the next reboot, rather than bouncing every
+> container for it.
+
+---
+
+## Known gaps
+
+### No scheduled SMART self-tests
 
 `smartd` runs, but with the stock `DEVICESCAN` line and no `-s` schedule,
 so no periodic short or long tests are configured. Neither pool drive has

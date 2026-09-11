@@ -33,6 +33,7 @@ A production-style home server environment I designed, built, and maintain. It r
 
 - **Versioned config backups:** all Portainer stack configs are backed up, sanitized, and versioned in Git (see [`scripts/`](scripts/) and [`docs/maintenance.md`](docs/maintenance.md))
 - **Storage built for drive life:** ZFS mirror with `ashift=12` matched to the drives' 4K physical sectors, `recordsize=1M` for bulk media, and `atime=off` so library scans stop turning reads into writes. Monthly scrubs, sanoid snapshots, and three independent alerting layers (ZED hooks, cron health checks, Scrutiny) reporting to ntfy. Every property, the reasoning behind it, and the gaps still open: [`docs/storage-zfs.md`](docs/storage-zfs.md)
+- **Safe shutdown ordering:** a `docker.service` drop-in orders Docker after the ZFS mount units, so containers stop before the pool unmounts. Both stop budgets are raised — the systemd one *and* dockerd's own `--shutdown-timeout`, which defaults to 15s and SIGKILLs containers regardless of what systemd was told to wait for
 - **Self-healing:** `restart: unless-stopped` across all stacks — full recovery from power loss with zero manual intervention
 - **On-demand GPU power control:** a second workstation hosts LLM inference and sleeps when idle. Dashboard tiles wake it (Wake-on-LAN magic packet from an always-on relay) and power it off (token-authed shutdown relayed server-side), with live GPU load/watts/temp read from sysfs. See the [runbook](docs/runbooks/wake-on-lan-remote-power-gpu-box.md)
 
