@@ -5,8 +5,9 @@ services:
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:release
     volumes:
-      - /home/<user>/immich-data/uploads:/usr/src/app/upload
-      - /vault:/mnt/media/vault:ro
+      - /vault/Pictures_Main_Album:/data
+    devices:
+      - /dev/dri:/dev/dri
     environment:
       - DB_HOSTNAME=immich-postgres
       - DB_USERNAME=postgres
@@ -19,6 +20,8 @@ services:
       - database
       - redis
     restart: always
+    mem_limit: 4g
+    memswap_limit: 4g
 
   immich-machine-learning:
     container_name: immich_machine_learning
@@ -29,6 +32,12 @@ services:
 
   redis:
     container_name: immich-redis
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     image: valkey/valkey:8-alpine
     restart: always
 
