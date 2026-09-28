@@ -84,7 +84,7 @@ made consciously, with the trade-offs written down so future-me doesn't
 
 - ZFS mirror (2× 16 TB) for `/vault`; SSD landing zone for torrent
   churn so the mirror only sees completed files.
-- **Sanoid snapshots** every 15 min on `vault` (24 hourly / 7 daily /
+- **Sanoid snapshots** every 4 h on `vault` (24 hourly / 7 daily /
   4 weekly / 3 monthly, autoprune). Recovery is a copy out of
   `/vault/.zfs/snapshot/<name>/`.
 - Snapshots protect against deletion/ransomware on the share, **not**

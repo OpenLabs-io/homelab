@@ -38,4 +38,4 @@ git grep -inE 'password|passwd|secret|token|api.?key|private.?key' \
 - Portainer compose files: `/var/lib/docker/volumes/portainer_data/_data/compose/<stack_id>/docker-compose.yml` (root-owned; the backup script reads them via a throwaway container)
 - Per-service configs: `~/docker/<service>/`
 - Monitoring configs: `/mnt/tank/apps/monitoring/`
-- ZFS snapshots (Sanoid, every 15 min): `/vault/.zfs/snapshot/<name>/`
+- ZFS snapshots (Sanoid, every 4 h): `/vault/.zfs/snapshot/<name>/`

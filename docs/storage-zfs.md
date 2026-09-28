@@ -262,7 +262,7 @@ deliver.
 | Script | Cadence | Catches |
 |---|---|---|
 | `check_zfs_health.sh` | every 15 min | pool not ONLINE, read/write/cksum counters |
-| `check_snapshots.sh` | twice hourly | sanoid silently stopped taking snapshots |
+| `check_snapshots.sh` | twice hourly | sanoid silently stopped taking snapshots (alerts past 5 h — the 4 h interval + 1 h slack; **this threshold is coupled to `sanoid.timer`, change both together**) |
 | `check_scrub_events.sh` | every 10 min | scrub start / finish / repair counts |
 | `check_scrub_age.sh` | weekly (Mon) | scrub silently stopped running at all |
 | `check_diskspace.sh` | every 6 h | capacity |
